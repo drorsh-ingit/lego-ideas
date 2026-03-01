@@ -1,6 +1,8 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from alembic import command
+from alembic.config import Config
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -8,8 +10,14 @@ from app.api.v1 import bom, matching, photos, reference, sessions
 from app.core.config import settings
 
 
+def run_migrations():
+    alembic_cfg = Config("alembic.ini")
+    command.upgrade(alembic_cfg, "head")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    run_migrations()
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
     yield
 
