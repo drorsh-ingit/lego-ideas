@@ -84,12 +84,12 @@ services:
     dockerfilePath: ./frontend/Dockerfile
     dockerContext: ./frontend
     plan: starter
-    dockerBuildArgs:
-      # Replace with your actual backend URL once lego-backend is deployed
-      NEXT_PUBLIC_API_URL: https://lego-backend.onrender.com/api/v1
     envVars:
       - key: NODE_ENV
         value: production
+      # Replace with your actual backend URL once lego-backend is deployed
+      - key: NEXT_PUBLIC_API_URL
+        value: https://lego-backend.onrender.com/api/v1
 
   # ── Redis ─────────────────────────────────────────────────────────────────────
   - type: redis
