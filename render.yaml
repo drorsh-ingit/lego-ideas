@@ -91,13 +91,14 @@ services:
       - key: NODE_ENV
         value: production
 
+  # ── Redis ─────────────────────────────────────────────────────────────────────
+  - type: redis
+    name: lego-redis
+    plan: starter
+    ipAllowList: []
+
 databases:
   - name: lego-postgres
     plan: starter
     databaseName: legoideas
     user: lego
-
-  # Redis (managed add-on)
-  - name: lego-redis
-    type: redis
-    plan: starter
