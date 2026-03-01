@@ -1,7 +1,7 @@
 import uuid as _uuid
-from datetime import datetime
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,8 +16,6 @@ from app.models.session import (
     SessionStatus,
 )
 from app.schemas.session import PhotoResponse
-from app.services.storage import save_upload
-from app.tasks.identify import identify_photo_task
 
 router = APIRouter(prefix="/sessions/{session_id}/photos", tags=["photos"])
 
@@ -30,6 +28,16 @@ async def get_session_or_404(session_id: UUID, db: AsyncSession) -> Session:
     return session
 
 
+async def _call_brickognize(image_bytes: bytes, filename: str) -> dict:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            f"{settings.brickognize_api_url}/predict/parts/",
+            files={"query_image": (filename, image_bytes, "image/jpeg")},
+        )
+        response.raise_for_status()
+        return response.json()
+
+
 @router.post("", response_model=list[PhotoResponse], status_code=201)
 async def upload_photos(
     session_id: UUID,
@@ -38,7 +46,6 @@ async def upload_photos(
 ):
     session = await get_session_or_404(session_id, db)
 
-    # Count existing photos
     result = await db.execute(
         select(SessionPhoto).where(SessionPhoto.session_id == session_id)
     )
@@ -57,22 +64,26 @@ async def upload_photos(
         if len(content) > settings.max_photo_size_mb * 1024 * 1024:
             raise HTTPException(status_code=400, detail=f"File {file.filename} too large")
 
-        file_path = await save_upload(str(session_id), file.filename or "photo.jpg", content)
+        filename = file.filename or "photo.jpg"
+
+        # Call Brickognize synchronously — no disk or task queue needed
+        raw_response = None
+        status = PhotoStatus.failed
+        try:
+            raw_response = await _call_brickognize(content, filename)
+            status = PhotoStatus.done
+        except Exception:
+            status = PhotoStatus.failed
 
         photo = SessionPhoto(
             id=_uuid.uuid4(),
             session_id=session_id,
-            filename=file.filename or "photo.jpg",
-            file_path=str(file_path),
-            status=PhotoStatus.pending,
+            filename=filename,
+            file_path="",  # no disk storage
+            status=status,
+            raw_response=raw_response,
         )
         db.add(photo)
-        await db.flush()
-
-        # Enqueue Celery task
-        task = identify_photo_task.delay(str(photo.id), str(file_path))
-        photo.celery_task_id = task.id
-
         photos.append(photo)
 
     session.status = SessionStatus.identifying
@@ -107,9 +118,7 @@ async def confirm_photos(
     session_id: UUID,
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Merge identified pieces from all done photos into BOM entries.
-    """
+    """Merge identified pieces from all done photos into BOM entries."""
     session = await get_session_or_404(session_id, db)
 
     result = await db.execute(
@@ -123,8 +132,7 @@ async def confirm_photos(
     for photo in photos:
         if not photo.raw_response:
             continue
-        items = photo.raw_response.get("items", [])
-        for item in items:
+        for item in photo.raw_response.get("items", []):
             part_num = item.get("id")
             confidence = item.get("score", 0.0)
             if not part_num:
