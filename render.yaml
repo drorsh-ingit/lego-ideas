@@ -99,6 +99,6 @@ services:
 
 databases:
   - name: lego-postgres
-    plan: starter
+    plan: free
     databaseName: legoideas
     user: lego
