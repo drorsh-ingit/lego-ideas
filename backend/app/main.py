@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import anyio
 from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
@@ -17,7 +18,8 @@ def run_migrations():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    run_migrations()
+    # Run in a thread so alembic's asyncio.run() gets a fresh event loop
+    await anyio.to_thread.run_sync(run_migrations)
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
     yield
 
