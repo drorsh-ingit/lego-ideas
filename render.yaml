@@ -5,7 +5,7 @@ services:
     runtime: docker
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
-    plan: starter
+    plan: free
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -47,7 +47,7 @@ services:
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
     dockerCommand: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
-    plan: starter
+    plan: free
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -83,7 +83,7 @@ services:
     runtime: docker
     dockerfilePath: ./frontend/Dockerfile
     dockerContext: ./frontend
-    plan: starter
+    plan: free
     envVars:
       - key: NODE_ENV
         value: production
@@ -94,7 +94,7 @@ services:
   # ── Redis ─────────────────────────────────────────────────────────────────────
   - type: redis
     name: lego-redis
-    plan: starter
+    plan: free
     ipAllowList: []
 
 databases:
