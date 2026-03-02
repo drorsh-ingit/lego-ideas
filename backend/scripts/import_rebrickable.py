@@ -78,6 +78,7 @@ def import_table(conn, table_name: str, csv_bytes: bytes):
     filtered.seek(0)
 
     cur.copy_expert(f'COPY "{tmp}" ({col_list}) FROM STDIN WITH CSV', filtered)
+    conn.commit()  # commit temp table so it survives a rollback on the INSERT
 
     # Insert ignoring duplicates; for FK violations (e.g. fig- inventories)
     # wrap each row individually so one bad row doesn't abort the whole import
