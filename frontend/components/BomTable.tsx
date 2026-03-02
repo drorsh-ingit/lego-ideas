@@ -1,5 +1,7 @@
 "use client";
+import { useEffect, useState } from "react";
 import { Trash2 } from "lucide-react";
+import { getPartInfo } from "@/lib/api";
 import type { BomEntry, Color } from "@/types/api";
 
 interface BomTableProps {
@@ -10,6 +12,25 @@ interface BomTableProps {
     data: { quantity?: number; color_id?: number | null }
   ) => void;
   onDelete: (entryId: string) => void;
+}
+
+function PartImage({ partNum }: { partNum: string }) {
+  const [imgUrl, setImgUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    getPartInfo(partNum).then((info) => setImgUrl(info.img_url)).catch(() => {});
+  }, [partNum]);
+
+  if (!imgUrl) return <div className="w-12 h-12 bg-gray-100 rounded" />;
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={imgUrl}
+      alt={partNum}
+      className="w-12 h-12 object-contain rounded bg-gray-50"
+      onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+    />
+  );
 }
 
 export function BomTable({ entries, colors, onUpdate, onDelete }: BomTableProps) {
@@ -63,15 +84,7 @@ export function BomTable({ entries, colors, onUpdate, onDelete }: BomTableProps)
                 <tr key={entry.id} className="hover:bg-gray-50 transition-colors">
                   {/* Part image */}
                   <td className="px-4 py-3">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={`https://cdn.rebrickable.com/media/parts/photos/${entry.part_num}.jpg`}
-                      alt={entry.part_num}
-                      className="w-12 h-12 object-contain rounded bg-gray-50"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).style.display = "none";
-                      }}
-                    />
+                    <PartImage partNum={entry.part_num} />
                   </td>
 
                   {/* Part number */}

@@ -96,4 +96,7 @@ export const getResultDetail = (
 export const searchParts = (search: string) =>
   apiFetch<Part[]>(`/parts?search=${encodeURIComponent(search)}`);
 
+export const getPartInfo = (partNum: string) =>
+  apiFetch<{ part_num: string; name: string; img_url: string | null }>(`/parts/${partNum}`);
+
 export const getColors = () => apiFetch<Color[]>("/colors");
