@@ -75,8 +75,9 @@ async def upload_photos(
         try:
             raw_response = await _call_brickognize(content, filename)
             status = PhotoStatus.done
+            print(f"Brickognize OK for {filename}: {raw_response}", flush=True)
         except Exception as e:
-            logger.error("Brickognize failed for %s: %s", filename, e)
+            print(f"Brickognize FAILED for {filename}: {type(e).__name__}: {e}", flush=True)
 
         photo = SessionPhoto(
             id=_uuid.uuid4(),
