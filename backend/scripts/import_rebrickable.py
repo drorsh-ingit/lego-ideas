@@ -50,33 +50,66 @@ def get_table_columns(cur, table_name: str) -> list[str]:
 
 
 def import_table(conn, table_name: str, csv_bytes: bytes):
+    import csv as csv_mod
+
     cur = conn.cursor()
 
     cur.execute(f'TRUNCATE TABLE "{table_name}" RESTART IDENTITY CASCADE')
     conn.commit()
 
-    f = io.StringIO(csv_bytes.decode("utf-8"))
-    csv_columns = [col.strip() for col in f.readline().split(",")]
+    # Parse CSV properly (handles quoted commas)
+    text = csv_bytes.decode("utf-8")
+    reader = csv_mod.DictReader(io.StringIO(text))
+    csv_columns = reader.fieldnames or []
 
     # Only import columns that exist in our schema (e.g. skip colors.num_parts)
     db_columns = get_table_columns(cur, table_name)
     valid_columns = [c for c in csv_columns if c in db_columns]
-
-    # COPY into a temp table first, then INSERT with ON CONFLICT DO NOTHING.
-    # This handles duplicate rows and FK violations (e.g. fig- minifig sets
-    # in inventories that aren't in our sets table).
-    tmp = f"_tmp_{table_name}"
     col_list = ", ".join(f'"{c}"' for c in valid_columns)
 
+    # Build filtered CSV with only valid columns and copy via temp table
+    tmp = f"_tmp_{table_name}"
     cur.execute(f'CREATE TEMP TABLE "{tmp}" AS SELECT {col_list} FROM "{table_name}" LIMIT 0')
-    cur.copy_expert(f'COPY "{tmp}" ({col_list}) FROM STDIN WITH CSV', f)
 
-    # Disable FK checks so orphaned rows (e.g. fig- inventories) are silently skipped
-    cur.execute("SET session_replication_role = 'replica'")
-    cur.execute(f'INSERT INTO "{table_name}" ({col_list}) SELECT {col_list} FROM "{tmp}" ON CONFLICT DO NOTHING')
-    cur.execute("SET session_replication_role = 'default'")
+    filtered = io.StringIO()
+    writer = csv_mod.DictWriter(filtered, fieldnames=valid_columns, extrasaction="ignore")
+    for row in reader:
+        writer.writerow({c: row[c] for c in valid_columns})
+    filtered.seek(0)
 
-    cur.execute(f'DROP TABLE "{tmp}"')
+    cur.copy_expert(f'COPY "{tmp}" ({col_list}) FROM STDIN WITH CSV', filtered)
+
+    # Insert ignoring duplicates; for FK violations (e.g. fig- inventories)
+    # wrap each row individually so one bad row doesn't abort the whole import
+    try:
+        cur.execute(
+            f'INSERT INTO "{table_name}" ({col_list}) SELECT {col_list} FROM "{tmp}" ON CONFLICT DO NOTHING'
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        # Fall back to row-by-row insert, skipping violating rows
+        cur2 = conn.cursor()
+        cur2.execute(f'SELECT {col_list} FROM "{tmp}"')
+        rows = cur2.fetchall()
+        cur2.close()
+        inserted = 0
+        for row in rows:
+            try:
+                placeholders = ", ".join(["%s"] * len(valid_columns))
+                cur3 = conn.cursor()
+                cur3.execute(
+                    f'INSERT INTO "{table_name}" ({col_list}) VALUES ({placeholders}) ON CONFLICT DO NOTHING',
+                    row,
+                )
+                conn.commit()
+                cur3.close()
+                inserted += 1
+            except Exception:
+                conn.rollback()
+        print(f"  (row-by-row fallback: {inserted}/{len(rows)} rows inserted)")
+
+    cur.execute(f'DROP TABLE IF EXISTS "{tmp}"')
     conn.commit()
     cur.close()
     print(f"  Imported {table_name}")
