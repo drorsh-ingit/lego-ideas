@@ -1,27 +1,18 @@
 #!/usr/bin/env python3
 """
 Download Rebrickable CSV dumps and import them into PostgreSQL.
-Usage: python scripts/import_rebrickable.py
-
-Rebrickable CSV download URLs:
-  https://cdn.rebrickable.com/media/downloads/themes.csv.gz
-  https://cdn.rebrickable.com/media/downloads/colors.csv.gz
-  https://cdn.rebrickable.com/media/downloads/part_categories.csv.gz
-  https://cdn.rebrickable.com/media/downloads/parts.csv.gz
-  https://cdn.rebrickable.com/media/downloads/part_relationships.csv.gz
-  https://cdn.rebrickable.com/media/downloads/sets.csv.gz
-  https://cdn.rebrickable.com/media/downloads/inventories.csv.gz
-  https://cdn.rebrickable.com/media/downloads/inventory_parts.csv.gz
+Usage: DATABASE_URL="postgresql://..." python scripts/import_rebrickable.py
 """
 import gzip
 import io
+import os
 import sys
 
 import httpx
 import psycopg2
 
-# Override with your actual DB connection string
-DB_URL = "postgresql://lego:legopass@localhost:5432/legoideas"
+DB_URL = os.environ.get("DATABASE_URL", "postgresql://lego:legopass@localhost:5432/legoideas")
+DB_URL = DB_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
 
 DOWNLOADS = [
     ("themes", "https://cdn.rebrickable.com/media/downloads/themes.csv.gz"),
@@ -45,21 +36,47 @@ def download_csv(url: str) -> bytes:
     return r.content
 
 
+def get_table_columns(cur, table_name: str) -> list[str]:
+    """Return column names that actually exist in the table."""
+    cur.execute(
+        """
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = %s
+        ORDER BY ordinal_position
+        """,
+        (table_name,),
+    )
+    return [row[0] for row in cur.fetchall()]
+
+
 def import_table(conn, table_name: str, csv_bytes: bytes):
     cur = conn.cursor()
-    # Truncate with CASCADE to handle FK constraints
+
     cur.execute(f'TRUNCATE TABLE "{table_name}" RESTART IDENTITY CASCADE')
     conn.commit()
 
     f = io.StringIO(csv_bytes.decode("utf-8"))
-    # Read and parse header
-    header = f.readline()
-    columns = [col.strip() for col in header.split(",")]
+    csv_columns = [col.strip() for col in f.readline().split(",")]
 
-    cur.copy_expert(
-        f'COPY "{table_name}" ({", ".join(columns)}) FROM STDIN WITH CSV',
-        f,
-    )
+    # Only import columns that exist in our schema (e.g. skip colors.num_parts)
+    db_columns = get_table_columns(cur, table_name)
+    valid_columns = [c for c in csv_columns if c in db_columns]
+
+    # COPY into a temp table first, then INSERT with ON CONFLICT DO NOTHING.
+    # This handles duplicate rows and FK violations (e.g. fig- minifig sets
+    # in inventories that aren't in our sets table).
+    tmp = f"_tmp_{table_name}"
+    col_list = ", ".join(f'"{c}"' for c in valid_columns)
+
+    cur.execute(f'CREATE TEMP TABLE "{tmp}" AS SELECT {col_list} FROM "{table_name}" LIMIT 0')
+    cur.copy_expert(f'COPY "{tmp}" ({col_list}) FROM STDIN WITH CSV', f)
+
+    # Disable FK checks so orphaned rows (e.g. fig- inventories) are silently skipped
+    cur.execute("SET session_replication_role = 'replica'")
+    cur.execute(f'INSERT INTO "{table_name}" ({col_list}) SELECT {col_list} FROM "{tmp}" ON CONFLICT DO NOTHING')
+    cur.execute("SET session_replication_role = 'default'")
+
+    cur.execute(f'DROP TABLE "{tmp}"')
     conn.commit()
     cur.close()
     print(f"  Imported {table_name}")
@@ -76,7 +93,7 @@ def refresh_views(conn):
 
 
 def main():
-    print(f"Connecting to {DB_URL} ...")
+    print(f"Connecting to DB ...")
     conn = psycopg2.connect(DB_URL)
 
     for table_name, url in DOWNLOADS:
