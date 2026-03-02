@@ -1,3 +1,4 @@
+import logging
 import uuid as _uuid
 from uuid import UUID
 
@@ -5,6 +6,8 @@ import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
 
 from app.core.config import settings
 from app.core.database import get_db
@@ -72,8 +75,8 @@ async def upload_photos(
         try:
             raw_response = await _call_brickognize(content, filename)
             status = PhotoStatus.done
-        except Exception:
-            status = PhotoStatus.failed
+        except Exception as e:
+            logger.error("Brickognize failed for %s: %s", filename, e)
 
         photo = SessionPhoto(
             id=_uuid.uuid4(),
