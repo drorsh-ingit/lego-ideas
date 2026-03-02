@@ -136,11 +136,13 @@ async def confirm_photos(
     for photo in photos:
         if not photo.raw_response:
             continue
-        for item in photo.raw_response.get("items", []):
-            part_num = item.get("id")
-            confidence = item.get("score", 0.0)
-            if not part_num:
-                continue
+        items = photo.raw_response.get("items", [])
+        if not items:
+            continue
+        item = items[0]  # top match only (highest confidence)
+        part_num = item.get("id")
+        confidence = item.get("score", 0.0)
+        if part_num:
             entry = SessionBomEntry(
                 id=_uuid.uuid4(),
                 session_id=session_id,

@@ -49,6 +49,36 @@ def get_table_columns(cur, table_name: str) -> list[str]:
     return [row[0] for row in cur.fetchall()]
 
 
+def get_fk_filters(cur, table_name: str) -> list[tuple[str, str, str, bool]]:
+    """Return (local_col, foreign_table, foreign_col, is_nullable) for each FK on the
+    table, excluding self-referential FKs (which would filter everything on a fresh import)."""
+    cur.execute(
+        """
+        SELECT kcu.column_name, ccu.table_name, ccu.column_name,
+               col.is_nullable = 'YES'
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+            ON tc.constraint_name = kcu.constraint_name
+            AND tc.table_schema = kcu.table_schema
+        JOIN information_schema.constraint_column_usage ccu
+            ON tc.constraint_name = ccu.constraint_name
+            AND tc.table_schema = ccu.table_schema
+        JOIN information_schema.columns col
+            ON col.table_schema = tc.table_schema
+            AND col.table_name = tc.table_name
+            AND col.column_name = kcu.column_name
+        WHERE tc.constraint_type = 'FOREIGN KEY'
+            AND tc.table_schema = 'public'
+            AND tc.table_name = %s
+        """,
+        (table_name,),
+    )
+    return [
+        row for row in cur.fetchall()
+        if row[1] != table_name  # skip self-referential FKs
+    ]
+
+
 def import_table(conn, table_name: str, csv_bytes: bytes):
     import csv as csv_mod
 
@@ -80,41 +110,41 @@ def import_table(conn, table_name: str, csv_bytes: bytes):
     cur.copy_expert(f'COPY "{tmp}" ({col_list}) FROM STDIN WITH CSV', filtered)
     conn.commit()  # commit temp table so it survives a rollback on the INSERT
 
-    # Insert ignoring duplicates; for FK violations (e.g. fig- inventories)
-    # wrap each row individually so one bad row doesn't abort the whole import
-    try:
-        cur.execute(
-            f'INSERT INTO "{table_name}" ({col_list}) SELECT {col_list} FROM "{tmp}" ON CONFLICT DO NOTHING'
+    # Build WHERE clauses to pre-filter rows that would violate FK constraints.
+    # e.g. inventories.set_num must exist in sets.set_num
+    # Self-referential FKs are skipped (data is internally consistent within the CSV).
+    # Nullable FK columns allow NULL through since NULL never violates a FK constraint.
+    fk_filters = get_fk_filters(cur, table_name)
+    where_clauses = [
+        (
+            f'(t."{local_col}" IS NULL OR t."{local_col}" IN (SELECT "{foreign_col}" FROM "{foreign_table}"))'
+            if is_nullable
+            else f't."{local_col}" IN (SELECT "{foreign_col}" FROM "{foreign_table}")'
         )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        # Fall back to savepoint-per-row (single transaction, skips FK violations)
-        cur2 = conn.cursor()
-        cur2.execute(f'SELECT {col_list} FROM "{tmp}"')
-        rows = cur2.fetchall()
-        cur2.close()
-        inserted = 0
-        placeholders = ", ".join(["%s"] * len(valid_columns))
-        insert_sql = f'INSERT INTO "{table_name}" ({col_list}) VALUES ({placeholders}) ON CONFLICT DO NOTHING'
-        cur3 = conn.cursor()
-        for row in rows:
-            cur3.execute("SAVEPOINT sp")
-            try:
-                cur3.execute(insert_sql, row)
-                cur3.execute("RELEASE SAVEPOINT sp")
-                inserted += 1
-            except Exception:
-                cur3.execute("ROLLBACK TO SAVEPOINT sp")
-                cur3.execute("RELEASE SAVEPOINT sp")
-        conn.commit()  # single commit for all rows
-        cur3.close()
-        print(f"  (savepoint fallback: {inserted}/{len(rows)} rows inserted)")
+        for local_col, foreign_table, foreign_col, is_nullable in fk_filters
+        if local_col in valid_columns
+    ]
+    where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+    cur.execute(
+        f'INSERT INTO "{table_name}" ({col_list}) '
+        f'SELECT {col_list} FROM "{tmp}" t {where_sql} ON CONFLICT DO NOTHING'
+    )
+    inserted = cur.rowcount
+    conn.commit()
+
+    if where_clauses:
+        # Count how many rows were skipped due to FK mismatches
+        cur.execute(f'SELECT COUNT(*) FROM "{tmp}"')
+        total = cur.fetchone()[0]
+        skipped = total - inserted
+        if skipped:
+            print(f"  (skipped {skipped} rows with unresolvable foreign keys)")
 
     cur.execute(f'DROP TABLE IF EXISTS "{tmp}"')
     conn.commit()
     cur.close()
-    print(f"  Imported {table_name}")
+    print(f"  Imported {table_name} ({inserted} rows)")
 
 
 def refresh_views(conn):
