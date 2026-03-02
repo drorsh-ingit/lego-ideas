@@ -89,26 +89,27 @@ def import_table(conn, table_name: str, csv_bytes: bytes):
         conn.commit()
     except Exception:
         conn.rollback()
-        # Fall back to row-by-row insert, skipping violating rows
+        # Fall back to savepoint-per-row (single transaction, skips FK violations)
         cur2 = conn.cursor()
         cur2.execute(f'SELECT {col_list} FROM "{tmp}"')
         rows = cur2.fetchall()
         cur2.close()
         inserted = 0
+        placeholders = ", ".join(["%s"] * len(valid_columns))
+        insert_sql = f'INSERT INTO "{table_name}" ({col_list}) VALUES ({placeholders}) ON CONFLICT DO NOTHING'
+        cur3 = conn.cursor()
         for row in rows:
+            cur3.execute("SAVEPOINT sp")
             try:
-                placeholders = ", ".join(["%s"] * len(valid_columns))
-                cur3 = conn.cursor()
-                cur3.execute(
-                    f'INSERT INTO "{table_name}" ({col_list}) VALUES ({placeholders}) ON CONFLICT DO NOTHING',
-                    row,
-                )
-                conn.commit()
-                cur3.close()
+                cur3.execute(insert_sql, row)
+                cur3.execute("RELEASE SAVEPOINT sp")
                 inserted += 1
             except Exception:
-                conn.rollback()
-        print(f"  (row-by-row fallback: {inserted}/{len(rows)} rows inserted)")
+                cur3.execute("ROLLBACK TO SAVEPOINT sp")
+                cur3.execute("RELEASE SAVEPOINT sp")
+        conn.commit()  # single commit for all rows
+        cur3.close()
+        print(f"  (savepoint fallback: {inserted}/{len(rows)} rows inserted)")
 
     cur.execute(f'DROP TABLE IF EXISTS "{tmp}"')
     conn.commit()
