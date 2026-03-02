@@ -35,6 +35,7 @@ export function BomTable({ entries, colors, onUpdate, onDelete }: BomTableProps)
         <table className="w-full text-sm">
           <thead className="bg-gray-50 border-b border-gray-200 sticky top-0">
             <tr>
+              <th className="px-4 py-3" />
               <th className="text-left px-4 py-3 font-semibold text-gray-600 whitespace-nowrap">
                 Part #
               </th>
@@ -60,6 +61,19 @@ export function BomTable({ entries, colors, onUpdate, onDelete }: BomTableProps)
               const selectedColor = getColorById(entry.color_id);
               return (
                 <tr key={entry.id} className="hover:bg-gray-50 transition-colors">
+                  {/* Part image */}
+                  <td className="px-4 py-3">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={`https://cdn.rebrickable.com/media/parts/photos/${entry.part_num}.jpg`}
+                      alt={entry.part_num}
+                      className="w-12 h-12 object-contain rounded bg-gray-50"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).style.display = "none";
+                      }}
+                    />
+                  </td>
+
                   {/* Part number */}
                   <td className="px-4 py-3">
                     <span className="font-mono text-gray-800 text-xs bg-gray-100 px-2 py-1 rounded">
